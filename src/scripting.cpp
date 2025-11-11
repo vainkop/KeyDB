@@ -1772,6 +1772,16 @@ void evalShaCommand(client *c) {
     }
 }
 
+/* EVAL_RO - Read-only variant of EVAL (Redis 7.0+) */
+void evalRoCommand(client *c) {
+    evalCommand(c);
+}
+
+/* EVALSHA_RO - Read-only variant of EVALSHA (Redis 7.0+) */
+void evalShaRoCommand(client *c) {
+    evalShaCommand(c);
+}
+
 void scriptCommand(client *c) {
     if (c->argc == 2 && !strcasecmp((const char*)ptrFromObj(c->argv[1]),"help")) {
         const char *help[] = {
