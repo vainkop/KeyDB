@@ -1,5 +1,5 @@
-![Current Release](https://img.shields.io/github/release/vainkop/KeyDB.svg)
-![CI](https://github.com/JohnSully/KeyDB/workflows/CI/badge.svg?branch=unstable)
+![Current Release](https://img.shields.io/github/v/release/vainkop/KeyDB)
+![CI](https://github.com/vainkop/KeyDB/workflows/CI/badge.svg?branch=main)
 [![StackShare](http://img.shields.io/badge/tech-stack-0690fa.svg?style=flat)](https://stackshare.io/eq-alpha-technology-inc/eq-alpha-technology-inc)
 
 ## KeyDB with Redis 8.2.3 Protocol Support
