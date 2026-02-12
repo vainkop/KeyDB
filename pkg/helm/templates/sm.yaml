@@ -1,4 +1,4 @@
-{{- if and .Values.exporter.enabled .Values.exporter.serviceMonitor.enabled }}
+{{- if and .Values.exporter.enabled .Values.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -6,10 +6,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "keydb.labels" . | nindent 4 }}
-  {{- with .Values.exporter.serviceMonitor.selector }}
+    {{- with .Values.serviceMonitor.labels }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.exporter.serviceMonitor.annotations }}
+    {{- end }}
+  {{- with .Values.serviceMonitor.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -21,12 +21,12 @@ spec:
     matchNames:
     - {{ .Release.Namespace }}
   endpoints:
-  - port: redis-exporter
-    {{- if .Values.exporter.serviceMonitor.interval }}
-    interval: {{ .Values.exporter.serviceMonitor.interval }}
+  - port: {{ .Values.exporter.portName }}
+    path: {{ .Values.exporter.scrapePath }}
+    {{- with .Values.serviceMonitor.interval }}
+    interval: {{ . }}
     {{- end }}
-    {{- if .Values.exporter.serviceMonitor.scrapeTimeout }}
-    scrapeTimeout: {{ .Values.exporter.serviceMonitor.scrapeTimeout }}
+    {{- with .Values.serviceMonitor.scrapeTimeout }}
+    scrapeTimeout: {{ . }}
     {{- end }}
 {{- end }}
-

@@ -8,36 +8,24 @@ metadata:
 data:
   ping_readiness_local.sh: |-
     #!/bin/bash
-
     set -e
-
-    loading_response="LOADING KeyDB is loading the dataset in memory"
-
     [[ -n "${KEYDB_PASSWORD}" ]] && export REDISCLI_AUTH="${KEYDB_PASSWORD}"
     response="$(
       timeout -s 3 "${1}" \
-      keydb-cli \
-        -h localhost \
-        -p 6379 \
-        PING
+      keydb-cli -h localhost -p {{ .Values.port }} PING
     )"
-    if [ "${response}" = "${loading_response}" ]; then
+    if [ "${response}" = "LOADING KeyDB is loading the dataset in memory" ]; then
       echo "${response}"
       exit 1
     fi
 
   ping_liveness_local.sh: |-
     #!/bin/bash
-
     set -e
-
     [[ -n "${KEYDB_PASSWORD}" ]] && export REDISCLI_AUTH="${KEYDB_PASSWORD}"
     response="$(
       timeout -s 3 "${1}" \
-      keydb-cli \
-        -h localhost \
-        -p 6379 \
-        PING
+      keydb-cli -h localhost -p {{ .Values.port }} PING
     )"
     if [ "${response}" != "PONG" ] && [ "${response}" != "LOADING KeyDB is loading the dataset in memory" ]; then
       echo "${response}"

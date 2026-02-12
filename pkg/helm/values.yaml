@@ -1,78 +1,99 @@
+## KeyDB with Redis 8.2.3 protocol support
+## https://github.com/vainkop/KeyDB
+
+## -- Override the chart name
 nameOverride: ""
+## -- Override the full resource name
 fullnameOverride: ""
 
-# Image from Docker Hub
-imageRepository: vainkop/keydb8
-imageTag: "8.2.3"
-imagePullPolicy: IfNotPresent
-imagePullSecrets: []
+## -- Image configuration
+image:
+  repository: vainkop/keydb8
+  tag: "8.2.3"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
 
+## -- Number of KeyDB pods (StatefulSet replicas)
 nodes: 1
 
-password: ""
-existingSecret: ""
-existingSecretPasswordKey: "password"
-
-port: 6379
-internalPort: 6379
-internalPortName: keydb
+## -- Number of server threads per node
 threads: 2
 
-multiMaster: "no"
-activeReplicas: "no"
-protectedMode: "no"
-appendonly: "no"
+## -- KeyDB port
+port: 6379
 
-## Pod annotations
+## -- KeyDB server configuration
+keydb:
+  ## -- Enable multi-master active-active replication
+  multiMaster: "no"
+  ## -- Enable active replicas (read from replicas)
+  activeReplicas: "no"
+  ## -- Disable protected mode for cluster communication
+  protectedMode: "no"
+  ## -- Enable AOF persistence
+  appendonly: "no"
+  ## -- Additional KeyDB configuration arguments
+  ## Format: array of dictionaries where key is the argument name and value can be:
+  ##   - A string: --key "value"
+  ##   - An array: --key "arg1" "arg2" "arg3" (for multi-argument options)
+  ##   - null/empty: --key (flag without value)
+  extraArgs: []
+    # - maxmemory: "64mb"
+    # - maxmemory-policy: "allkeys-lru"
+    # - client-output-buffer-limit: ["normal", "0", "0", "0"]
+    # - save: ~
+    # - tcp-backlog: "1024"
+
+## -- Authentication
+auth:
+  ## -- Password (plain text, stored in a Secret)
+  password: ""
+  ## -- Use an existing Secret for the password
+  existingSecret: ""
+  ## -- Key in the existing Secret
+  existingSecretPasswordKey: "password"
+
+## -- Pod annotations
 podAnnotations: {}
 
-## Extra environment variables
+## -- Extra environment variables for the KeyDB container
 extraEnvVars: []
 
-## Additional init containers
+## -- Additional init containers
 extraInitContainers: []
 
-## Additional sidecar containers
+## -- Additional sidecar containers
 extraContainers: []
 
-## Extra volumes
+## -- Extra volumes
 extraVolumes: []
 
+## -- Service configuration
 service:
+  type: ClusterIP
   annotations: {}
+  ## -- Set appProtocol on service ports
   appProtocol:
     enabled: false
 
-## LoadBalancer Service
+## -- Headless Service (required for StatefulSet DNS)
+headlessService:
+  enabled: true
+
+## -- LoadBalancer Service
 loadBalancer:
   enabled: false
   annotations: {}
 
-## Internal headless service  
-headlessService:
-  enabled: true
-
-## Service Monitor for Prometheus Operator
-serviceMonitor:
-  enabled: false
-  labels: {}
-  annotations: {}
-
-## Persist data to a persistent volume
+## -- Persistence
 persistence:
   enabled: true
-  ## database data Persistent Volume Storage Class
-  ## If defined, storageClassName: <storageClass>
-  ## If set to "-", storageClassName: "", which disables dynamic provisioning
-  ## If undefined (the default) or set to null, no storageClassName spec is
-  ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
-  ##   GKE, AWS & OpenStack)
-  ##
-  # storageClass: "-"
+  ## -- Storage class (empty = default provisioner; "-" = disable dynamic provisioning)
+  storageClass: ""
   accessMode: ReadWriteOnce
   size: 3Gi
 
-## Configure resource requests
+## -- Resource requests and limits
 resources:
   requests:
     cpu: 250m
@@ -81,8 +102,7 @@ resources:
     cpu: 250m
     memory: 256Mi
 
-
-## Configure extra options for liveness and readiness probes
+## -- Liveness probe
 livenessProbe:
   enabled: true
   custom: {}
@@ -92,6 +112,7 @@ livenessProbe:
   successThreshold: 1
   failureThreshold: 5
 
+## -- Readiness probe
 readinessProbe:
   enabled: true
   custom: {}
@@ -101,6 +122,7 @@ readinessProbe:
   successThreshold: 1
   failureThreshold: 5
 
+## -- Startup probe
 startupProbe:
   enabled: true
   custom: {}
@@ -108,104 +130,62 @@ startupProbe:
   timeoutSeconds: 1
   failureThreshold: 24
 
-## Pod-level security context
-securityContext: {}
+## -- Pod-level security context
+podSecurityContext:
+  fsGroup: 999
+  runAsUser: 999
+  runAsNonRoot: true
 
-## Container-level security context for keydb container
-keydb:
-  securityContext: {}
+## -- Container-level security context for keydb container
+containerSecurityContext: {}
 
-## Lifecycle hooks
+## -- Lifecycle hooks for keydb container
 lifecycle: {}
 
-##
-## Additional KeyDB configuration arguments
-## ref: https://docs.keydb.dev/docs/config-file/
-##
-## Format: array of dictionaries where key is the argument name and value can be:
-##   - A string: --key "value"
-##   - An array: --key "arg1" "arg2" "arg3" (for multi-argument options)
-##   - null/empty: --key (flag without value)
-##
-configExtraArgs: []
-  # Examples:
-  # - client-output-buffer-limit: ["normal", "0", "0", "0"]
-  # - client-output-buffer-limit: ["replica", "256mb", "64mb", "60"]
-  # - client-output-buffer-limit: ["pubsub", "32mb", "8mb", "60"]
-  # - save: ~
-  # - tcp-backlog: "1024"
-  # - appendonly: "yes"
-
-## Node labels for pod assignment
-## Ref: https://kubernetes.io/docs/user-guide/node-selection/
-##
+## -- Node selector
 nodeSelector: {}
 
-## Tolerations for pod assignment
-## Ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
-##
+## -- Tolerations
 tolerations: []
 
-## Affinity for pod assignment
-## Ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#affinity-and-anti-affinity
-##
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-    - weight: 100
-      podAffinityTerm:
-        labelSelector:
-          matchExpressions:
-          - key: app.kubernetes.io/name
-            operator: In
-            values:
-            - keydb
-          - key: app.kubernetes.io/instance
-            operator: In
-            values:
-            - keydb
-        topologyKey: "kubernetes.io/hostname"
+## -- Affinity (supports template expressions via tpl)
+affinity: {}
 
-## Additional affinities
-additionalAffinities: {}
-
-## Topology spread constraints
+## -- Topology spread constraints
 topologySpreadConstraints: []
 
-## Pod Disruption Budget
-## https://kubernetes.io/docs/concepts/workloads/pods/disruptions/
+## -- Pod Disruption Budget
 podDisruptionBudget:
   enabled: false
+  ## -- Minimum available pods (cannot be set with maxUnavailable)
   minAvailable: 1
-
-## Prometheus exporter configuration
-exporter:
-  enabled: false
-  image: oliver006/redis_exporter
-  tag: latest
-  pullPolicy: IfNotPresent
-  resources: {}
-  extraArgs: {}
-  port: 9121
-  scrapePath: /metrics
-  serviceMonitor:
-    enabled: false
-    interval: 30s
-    scrapeTimeout: 10s
-    selector: {}
-    annotations: {}
+  ## -- Maximum unavailable pods (cannot be set with minAvailable)
   # maxUnavailable: 1
 
-## Service account
-## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+## -- Prometheus redis-exporter sidecar
+exporter:
+  enabled: false
+  image:
+    repository: oliver006/redis_exporter
+    tag: v1.80.1
+    pullPolicy: IfNotPresent
+  resources: {}
+  port: 9121
+  portName: redis-exporter
+  scrapePath: /metrics
+  extraArgs: []
+  securityContext: {}
+
+## -- Prometheus ServiceMonitor (requires exporter and Prometheus Operator CRDs)
+serviceMonitor:
+  enabled: false
+  labels: {}
+  annotations: {}
+  interval: 30s
+  # scrapeTimeout: 10s
+
+## -- ServiceAccount
 serviceAccount:
   create: true
-  ## The name of the ServiceAccount to use.
-  ## If not set and create is true, a name is generated using the fullname template
   name: ""
   annotations: {}
-
-## RBAC
-## ref: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
-rbac:
-  create: false

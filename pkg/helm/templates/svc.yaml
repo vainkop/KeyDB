@@ -5,10 +5,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "keydb.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
   annotations:
-    {{- toYaml .Values.service.annotations | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.service.type }}
   ports:
   - name: keydb
     port: {{ .Values.port | int }}
@@ -18,14 +20,13 @@ spec:
     appProtocol: redis
     {{- end }}
   {{- if .Values.exporter.enabled }}
-  - name: redis-exporter
+  - name: {{ .Values.exporter.portName }}
     port: {{ .Values.exporter.port | int }}
     protocol: TCP
-    targetPort: redis-exporter
+    targetPort: {{ .Values.exporter.portName }}
     {{- if .Values.service.appProtocol.enabled }}
     appProtocol: http
     {{- end }}
   {{- end }}
   selector:
     {{- include "keydb.selectorLabels" . | nindent 4 }}
-  sessionAffinity: ClientIP

@@ -6,16 +6,16 @@ metadata:
   labels:
     {{- include "keydb.labels" . | nindent 4 }}
 spec:
+  replicas: {{ .Values.nodes }}
+  serviceName: {{ include "keydb.fullname" . }}-headless
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "keydb.selectorLabels" . | nindent 6 }}
-  serviceName: {{ include "keydb.fullname" . }}-headless
-  replicas: {{ .Values.nodes }}
-  podManagementPolicy: Parallel
   template:
     metadata:
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/cm-health.yaml") . | sha256sum }}
+        checksum/health: {{ include (print $.Template.BasePath "/cm-health.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -23,198 +23,213 @@ spec:
         {{- include "keydb.selectorLabels" . | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 120
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "keydb.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
       securityContext:
-        fsGroup: 999
-        runAsUser: 999
-        runAsNonRoot: true
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:
-        {{- include "common.tplvalues.render" (dict "value" . "context" $) | nindent 8 }}
+        {{- include "keydb.tplValue" (dict "value" . "context" $) | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.topologySpreadConstraints }}
+      {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- range .Values.topologySpreadConstraints }}
+        {{- range . }}
         - labelSelector:
             matchLabels:
               {{- include "keydb.selectorLabels" $ | nindent 14 }}
           topologyKey: {{ default "topology.kubernetes.io/zone" .topologyKey }}
           maxSkew: {{ .maxSkew }}
-          {{- if .minDomains }}
-          minDomains: {{ .minDomains }}
-          {{- end }}
           whenUnsatisfiable: {{ default "DoNotSchedule" .whenUnsatisfiable }}
-          {{- if .nodeAffinityPolicy }}
-          nodeAffinityPolicy: {{ .nodeAffinityPolicy }}
+          {{- with .minDomains }}
+          minDomains: {{ . }}
           {{- end }}
-          {{- if .nodeTaintsPolicy }}
-          nodeTaintsPolicy: {{ .nodeTaintsPolicy }}
+          {{- with .nodeAffinityPolicy }}
+          nodeAffinityPolicy: {{ . }}
+          {{- end }}
+          {{- with .nodeTaintsPolicy }}
+          nodeTaintsPolicy: {{ . }}
           {{- end }}
         {{- end }}
       {{- end }}
-      {{- if .Values.extraInitContainers }}
+      {{- with .Values.extraInitContainers }}
       initContainers:
-      {{- toYaml .Values.extraInitContainers | nindent 6 }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: keydb
-        image: "{{ .Values.imageRepository }}:{{ .Values.imageTag }}"
-        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        image: {{ include "keydb.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
         command:
-          - /bin/bash
-          - -c
-          - |
-            set -e
-
-            # Get pod ordinal
-            ORDINAL=$(echo $HOSTNAME | rev | cut -d'-' -f1 | rev)
-
-            # Build replication config
-            REPLICATION_ARGS=""
-            {{- $fullname := include "keydb.fullname" . }}
-            {{- $namespace := .Release.Namespace }}
-            {{- range $i := until (int .Values.nodes) }}
-            if [ "$ORDINAL" != "{{ $i }}" ]; then
-              REPLICATION_ARGS="$REPLICATION_ARGS --replicaof {{ $fullname }}-{{ $i }}.{{ $fullname }}-headless.{{ $namespace }}.svc.cluster.local 6379"
-            fi
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          ORDINAL=$(echo $HOSTNAME | rev | cut -d'-' -f1 | rev)
+          REPLICATION_ARGS=""
+          {{- $fullname := include "keydb.fullname" . }}
+          {{- $namespace := .Release.Namespace }}
+          {{- $port := int .Values.port }}
+          {{- range $i := until (int .Values.nodes) }}
+          if [ "$ORDINAL" != "{{ $i }}" ]; then
+            REPLICATION_ARGS="$REPLICATION_ARGS --replicaof {{ $fullname }}-{{ $i }}.{{ $fullname }}-headless.{{ $namespace }}.svc.cluster.local {{ $port }}"
+          fi
+          {{- end }}
+          exec keydb-server /etc/keydb/keydb.conf \
+            --bind 0.0.0.0 \
+            --port {{ $port }} \
+            --dir /data \
+            {{- if include "keydb.authEnabled" . }}
+            --requirepass "${KEYDB_PASSWORD}" \
+            --masterauth "${KEYDB_PASSWORD}" \
             {{- end }}
-
-            # Start KeyDB
-            exec keydb-server /etc/keydb/keydb.conf \
-              --bind 0.0.0.0 \
-              --port 6379 \
-              --dir /data \
-              {{- if .Values.password }}
-              --requirepass "${KEYDB_PASSWORD}" \
-              --masterauth "${KEYDB_PASSWORD}" \
-              {{- else if .Values.existingSecret }}
-              --requirepass "${KEYDB_PASSWORD}" \
-              --masterauth "${KEYDB_PASSWORD}" \
-              {{- end }}
-              {{- if .Values.threads }}
-              --server-threads {{ .Values.threads }} \
-              {{- end }}
-              {{- if .Values.multiMaster }}
-              --multi-master {{ .Values.multiMaster }} \
-              {{- end }}
-              {{- if .Values.activeReplicas }}
-              --active-replica {{ .Values.activeReplicas }} \
-              {{- end }}
-              {{- if .Values.protectedMode }}
-              --protected-mode {{ .Values.protectedMode }} \
-              {{- end }}
-              {{- if .Values.appendonly }}
-              --appendonly {{ .Values.appendonly }} \
-              {{- end }}
-              {{- range $item := .Values.configExtraArgs }}
-              {{- range $key, $value := $item }}
-              {{- if kindIs "invalid" $value }}
-              --{{ $key }} \
-              {{- else if kindIs "slice" $value }}
-              --{{ $key }}{{ range $value }} {{ . | quote }}{{ end }} \
-              {{- else }}
-              --{{ $key }} {{ $value | quote }} \
-              {{- end }}
-              {{- end }}
-              {{- end }}
-              $REPLICATION_ARGS
+            --server-threads {{ .Values.threads }} \
+            --multi-master {{ .Values.keydb.multiMaster | quote }} \
+            --active-replica {{ .Values.keydb.activeReplicas | quote }} \
+            --protected-mode {{ .Values.keydb.protectedMode | quote }} \
+            --appendonly {{ .Values.keydb.appendonly | quote }} \
+            {{- range $item := .Values.keydb.extraArgs }}
+            {{- range $key, $value := $item }}
+            {{- if kindIs "invalid" $value }}
+            --{{ $key }} \
+            {{- else if kindIs "slice" $value }}
+            --{{ $key }}{{ range $value }} {{ . | quote }}{{ end }} \
+            {{- else }}
+            --{{ $key }} {{ $value | quote }} \
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            $REPLICATION_ARGS
         env:
-        {{- if .Values.existingSecret }}
+        {{- if include "keydb.authEnabled" . }}
         - name: KEYDB_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: {{ .Values.existingSecret }}
-              key: {{ .Values.existingSecretPasswordKey }}
-        {{- else if .Values.password }}
-        - name: KEYDB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "keydb.fullname" . }}
-              key: password
+              name: {{ include "keydb.passwordSecretName" . }}
+              key: {{ .Values.auth.existingSecretPasswordKey }}
         {{- end }}
         {{- with .Values.extraEnvVars }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
         ports:
         - name: keydb
-          containerPort: 6379
+          containerPort: {{ .Values.port }}
           protocol: TCP
         {{- if .Values.livenessProbe.enabled }}
         livenessProbe:
-        {{- if .Values.livenessProbe.custom }}
+          {{- if .Values.livenessProbe.custom }}
           {{- toYaml .Values.livenessProbe.custom | nindent 10 }}
-        {{- else }}
+          {{- else }}
           initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
           timeoutSeconds: {{ add1 .Values.livenessProbe.timeoutSeconds }}
           successThreshold: {{ .Values.livenessProbe.successThreshold }}
           failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           exec:
-            command:
-              - sh
-              - -c
-              - /health/ping_liveness_local.sh {{ .Values.livenessProbe.timeoutSeconds }}
-        {{- end }}
+            command: ["sh", "-c", "/health/ping_liveness_local.sh {{ .Values.livenessProbe.timeoutSeconds }}"]
+          {{- end }}
         {{- end }}
         {{- if .Values.readinessProbe.enabled }}
         readinessProbe:
-        {{- if .Values.readinessProbe.custom }}
+          {{- if .Values.readinessProbe.custom }}
           {{- toYaml .Values.readinessProbe.custom | nindent 10 }}
-        {{- else }}
+          {{- else }}
           initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
           timeoutSeconds: {{ add1 .Values.readinessProbe.timeoutSeconds }}
           successThreshold: {{ .Values.readinessProbe.successThreshold }}
           failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           exec:
-            command:
-              - sh
-              - -c
-              - /health/ping_readiness_local.sh {{ .Values.readinessProbe.timeoutSeconds }}
-        {{- end }}
+            command: ["sh", "-c", "/health/ping_readiness_local.sh {{ .Values.readinessProbe.timeoutSeconds }}"]
+          {{- end }}
         {{- end }}
         {{- if .Values.startupProbe.enabled }}
         startupProbe:
-        {{- if .Values.startupProbe.custom }}
+          {{- if .Values.startupProbe.custom }}
           {{- toYaml .Values.startupProbe.custom | nindent 10 }}
-        {{- else }}
+          {{- else }}
           periodSeconds: {{ .Values.startupProbe.periodSeconds }}
           timeoutSeconds: {{ add1 .Values.startupProbe.timeoutSeconds }}
           failureThreshold: {{ .Values.startupProbe.failureThreshold }}
           exec:
-            command:
-              - sh
-              - -c
-              - /health/ping_readiness_local.sh {{ .Values.startupProbe.timeoutSeconds }}
+            command: ["sh", "-c", "/health/ping_readiness_local.sh {{ .Values.startupProbe.timeoutSeconds }}"]
+          {{- end }}
         {{- end }}
-        {{- end }}
-        {{- if .Values.lifecycle }}
+        {{- with .Values.lifecycle }}
         lifecycle:
-          {{- toYaml .Values.lifecycle | nindent 10 }}
+          {{- toYaml . | nindent 10 }}
         {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
+        {{- with .Values.containerSecurityContext }}
         securityContext:
-          {{- toYaml .Values.keydb.securityContext | nindent 10 }}
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /data
         - name: health
           mountPath: /health
-      {{- if .Values.extraContainers }}
-      {{- toYaml .Values.extraContainers | nindent 6 }}
+      {{- if .Values.exporter.enabled }}
+      - name: redis-exporter
+        image: "{{ .Values.exporter.image.repository }}:{{ .Values.exporter.image.tag }}"
+        imagePullPolicy: {{ .Values.exporter.image.pullPolicy }}
+        {{- with .Values.exporter.extraArgs }}
+        args:
+          {{- range $item := . }}
+          {{- range $key, $value := $item }}
+          {{- if kindIs "invalid" $value }}
+          - --{{ $key }}
+          {{- else }}
+          - --{{ $key }}
+          - {{ $value | quote }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+        {{- end }}
+        env:
+        - name: REDIS_ADDR
+          value: "redis://localhost:{{ .Values.port }}"
+        {{- if include "keydb.authEnabled" . }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "keydb.passwordSecretName" . }}
+              key: {{ .Values.auth.existingSecretPasswordKey }}
+        {{- end }}
+        ports:
+        - name: {{ .Values.exporter.portName }}
+          containerPort: {{ .Values.exporter.port }}
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.exporter.portName }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.exporter.portName }}
+        resources:
+          {{- toYaml .Values.exporter.resources | nindent 10 }}
+        {{- with .Values.exporter.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.extraContainers }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
       volumes:
       - name: health
@@ -225,8 +240,8 @@ spec:
       - name: data
         emptyDir: {}
       {{- end }}
-      {{- if .Values.extraVolumes }}
-      {{- toYaml .Values.extraVolumes | nindent 6 }}
+      {{- with .Values.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
   {{- if .Values.persistence.enabled }}
   volumeClaimTemplates:
@@ -237,8 +252,8 @@ spec:
     spec:
       accessModes:
         - {{ .Values.persistence.accessMode | quote }}
-      {{- if .Values.persistence.storageClass }}
-      {{- if (eq "-" .Values.persistence.storageClass) }}
+      {{- if and .Values.persistence.storageClass (ne .Values.persistence.storageClass "") }}
+      {{- if eq "-" .Values.persistence.storageClass }}
       storageClassName: ""
       {{- else }}
       storageClassName: {{ .Values.persistence.storageClass | quote }}

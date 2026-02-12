@@ -14,10 +14,9 @@ spec:
   type: LoadBalancer
   ports:
   - name: keydb
-    port: 6379
+    port: {{ .Values.port | int }}
     protocol: TCP
     targetPort: keydb
   selector:
     {{- include "keydb.selectorLabels" . | nindent 4 }}
 {{- end }}
-
