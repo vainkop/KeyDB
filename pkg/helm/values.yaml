@@ -3,22 +3,25 @@ fullnameOverride: ""
 
 # Image from Docker Hub
 imageRepository: vainkop/keydb8
-imageTag: 8.2.3
+imageTag: "8.2.3"
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []
 
-nodes: 2
+nodes: 1
 
 password: ""
 existingSecret: ""
 existingSecretPasswordKey: "password"
 
 port: 6379
+internalPort: 6379
+internalPortName: keydb
 threads: 2
 
-multiMaster: "yes"
-activeReplicas: "yes"
+multiMaster: "no"
+activeReplicas: "no"
 protectedMode: "no"
+appendonly: "no"
 
 ## Pod annotations
 podAnnotations: {}
@@ -67,13 +70,17 @@ persistence:
   ##
   # storageClass: "-"
   accessMode: ReadWriteOnce
-  size: 10Gi
+  size: 3Gi
 
 ## Configure resource requests
 resources:
   requests:
-    memory: 256Mi
     cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
 
 ## Configure extra options for liveness and readiness probes
 livenessProbe:
@@ -101,6 +108,13 @@ startupProbe:
   timeoutSeconds: 1
   failureThreshold: 24
 
+## Pod-level security context
+securityContext: {}
+
+## Container-level security context for keydb container
+keydb:
+  securityContext: {}
+
 ## Lifecycle hooks
 lifecycle: {}
 
@@ -125,8 +139,7 @@ configExtraArgs: []
 ## Node labels for pod assignment
 ## Ref: https://kubernetes.io/docs/user-guide/node-selection/
 ##
-nodeSelector:
-  kubernetes.io/arch: arm64
+nodeSelector: {}
 
 ## Tolerations for pod assignment
 ## Ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/

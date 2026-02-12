@@ -18,6 +18,9 @@ extern "C" {
 
 #include "functions.h"  /* Include after other headers to ensure proper linkage */
 
+/* Forward declaration from scripting.cpp */
+void luaReplyToRedisReply(client *c, lua_State *lua);
+
 #define LOAD_TIMEOUT_MS 500
 
 /* Forward declarations */
@@ -26,6 +29,10 @@ static void engineStatsDispose(void *privdata, void *obj);
 static void engineLibraryDispose(void *privdata, void *obj);
 static void engineDispose(void *privdata, void *obj);
 static int functionsVerifyName(sds name);
+
+/* External dict helpers for case-insensitive engine name matching */
+extern uint64_t dictSdsCaseHash(const void *key);
+extern int dictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2);
 
 typedef struct functionsLibEngineStats {
     size_t n_lib;
@@ -39,10 +46,10 @@ static std::mutex functions_mutex;  /* KeyDB: Thread safety */
 
 /* Dictionary types - using case-insensitive hash/compare from dict.c */
 dictType engineDictType = {
-    dictSdsHash,            /* hash function */
+    dictSdsCaseHash,        /* hash function - case insensitive */
     NULL,                   /* key dup */
     NULL,                   /* val dup */
-    dictSdsKeyCompare,      /* key compare */
+    dictSdsKeyCaseCompare,  /* key compare - case insensitive */
     dictSdsDestructor,      /* key destructor */
     engineDispose,          /* val destructor */
     NULL,                   /* allow to expand */
@@ -306,7 +313,12 @@ int functionLibCreateFunction(sds name, void *function, functionLibInfo *li,
     
     int res = dictAdd(li->functions, fi->name, fi);
     serverAssert(res == DICT_OK);
-    
+
+    /* Also register in the global functions dict for FCALL lookup */
+    if (curr_functions_lib_ctx) {
+        dictAdd(curr_functions_lib_ctx->functions, sdsdup(fi->name), fi);
+    }
+
     return C_OK;
 }
 
@@ -345,77 +357,203 @@ typedef struct luaFunctionCtx {
     int lua_function_ref;  /* Lua registry reference */
 } luaFunctionCtx;
 
+/* Thread-local pointer to the library currently being loaded, used by luaRegisterFunction */
+static thread_local functionLibInfo *tl_current_lib = nullptr;
+
+/* Lua C function implementing redis.register_function() */
+static int luaRegisterFunction(lua_State *L) {
+    const char *name = NULL;
+    int func_ref = LUA_NOREF;
+    sds desc = NULL;
+    uint64_t flags = 0;
+
+    if (lua_isstring(L, 1) && lua_isfunction(L, 2)) {
+        /* Simple form: redis.register_function("name", callback) */
+        name = lua_tostring(L, 1);
+        lua_pushvalue(L, 2);
+        func_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else if (lua_istable(L, 1)) {
+        /* Table form: redis.register_function{function_name="name", callback=func, ...} */
+        lua_getfield(L, 1, "function_name");
+        name = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        lua_getfield(L, 1, "callback");
+        if (lua_isfunction(L, -1)) {
+            func_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        } else {
+            lua_pop(L, 1);
+        }
+
+        lua_getfield(L, 1, "description");
+        if (lua_isstring(L, -1)) {
+            desc = sdsnew(lua_tostring(L, -1));
+        }
+        lua_pop(L, 1);
+
+        /* Parse flags */
+        lua_getfield(L, 1, "flags");
+        if (lua_istable(L, -1)) {
+            lua_pushnil(L);
+            while (lua_next(L, -2)) {
+                if (lua_isstring(L, -1)) {
+                    const char *flag = lua_tostring(L, -1);
+                    if (strcasecmp(flag, "no-writes") == 0) flags |= SCRIPT_FLAG_NO_WRITES;
+                    else if (strcasecmp(flag, "allow-oom") == 0) flags |= SCRIPT_FLAG_ALLOW_OOM;
+                    else if (strcasecmp(flag, "allow-stale") == 0) flags |= SCRIPT_FLAG_ALLOW_STALE;
+                    else if (strcasecmp(flag, "no-cluster") == 0) flags |= SCRIPT_FLAG_NO_CLUSTER;
+                    else if (strcasecmp(flag, "allow-cross-slot-keys") == 0) flags |= SCRIPT_FLAG_ALLOW_CROSS_SLOT;
+                }
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+    } else {
+        return luaL_error(L, "redis.register_function requires (name, callback) or {function_name=..., callback=...}");
+    }
+
+    if (!name || func_ref == LUA_NOREF) {
+        return luaL_error(L, "redis.register_function: name and callback are required");
+    }
+
+    if (!tl_current_lib) {
+        luaL_unref(L, LUA_REGISTRYINDEX, func_ref);
+        return luaL_error(L, "redis.register_function can only be called during FUNCTION LOAD");
+    }
+
+    luaFunctionCtx *f_ctx = (luaFunctionCtx *)zmalloc(sizeof(*f_ctx));
+    f_ctx->lua_function_ref = func_ref;
+
+    sds err = NULL;
+    sds sds_name = sdsnew(name);
+    if (functionLibCreateFunction(sds_name, f_ctx, tl_current_lib, desc, flags, &err) != C_OK) {
+        luaL_unref(L, LUA_REGISTRYINDEX, func_ref);
+        zfree(f_ctx);
+        sdsfree(sds_name);
+        if (desc) sdsfree(desc);
+        const char *e = err ? err : "Failed to register function";
+        if (err) sdsfree(err);
+        return luaL_error(L, "%s", e);
+    }
+
+    return 0;
+}
+
 /* Create a function library from Lua code */
-static int luaEngineCreate(void *engine_ctx, functionLibInfo *li, sds code, 
+static int luaEngineCreate(void *engine_ctx, functionLibInfo *li, sds code,
                             size_t timeout, sds *err) {
-    UNUSED(li);
     UNUSED(timeout);
-    
+
     luaEngineCtx *lua_engine_ctx = (luaEngineCtx *)engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
-    
+
+    /* Skip the shebang line (#!...) - luaL_loadbuffer doesn't do this automatically */
+    const char *lua_code = code;
+    size_t lua_code_len = sdslen(code);
+    if (lua_code_len >= 2 && lua_code[0] == '#' && lua_code[1] == '!') {
+        const char *eol = (const char *)memchr(lua_code, '\n', lua_code_len);
+        if (eol) {
+            eol++; /* skip the newline */
+            lua_code_len -= (eol - lua_code);
+            lua_code = eol;
+        }
+    }
+
     /* Compile the Lua code */
-    if (luaL_loadbuffer(lua, code, sdslen(code), "@user_function")) {
-        *err = sdscatprintf(sdsempty(), "Error compiling function: %s", 
+    if (luaL_loadbuffer(lua, lua_code, lua_code_len, "@user_function")) {
+        *err = sdscatprintf(sdsempty(), "Error compiling function: %s",
                            lua_tostring(lua, -1));
         lua_pop(lua, 1);
         return C_ERR;
     }
-    
+
+    /* Register redis.register_function before executing the library code */
+    tl_current_lib = li;
+
+    lua_getglobal(lua, "redis");
+    if (!lua_istable(lua, -1)) {
+        lua_pop(lua, 1);
+        lua_newtable(lua);
+        lua_setglobal(lua, "redis");
+        lua_getglobal(lua, "redis");
+    }
+    lua_pushcfunction(lua, luaRegisterFunction);
+    lua_setfield(lua, -2, "register_function");
+    lua_pop(lua, 1); /* pop redis table */
+
     /* Execute the code to register functions */
     if (lua_pcall(lua, 0, 0, 0)) {
-        *err = sdscatprintf(sdsempty(), "Error loading function: %s", 
+        *err = sdscatprintf(sdsempty(), "Error loading function: %s",
                            lua_tostring(lua, -1));
         lua_pop(lua, 1);
+        tl_current_lib = nullptr;
         return C_ERR;
     }
-    
+
+    tl_current_lib = nullptr;
     return C_OK;
 }
 
 /* Call a Lua function - REAL implementation adapted from Redis 8 */
 static void luaEngineCall(void *r_ctx, void *engine_ctx, void *compiled_function,
                           robj **keys, size_t nkeys, robj **args, size_t nargs) {
-    UNUSED(r_ctx);  /* KeyDB doesn't use scriptRunCtx yet */
-    
+    client *c = (client *)r_ctx;
+
     luaEngineCtx *lua_engine_ctx = (luaEngineCtx *)engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
     luaFunctionCtx *f_ctx = (luaFunctionCtx *)compiled_function;
-    
+
+    /* Set up Lua caller context so redis.call() works inside functions */
+    client *prev_lua_caller = g_pserver->lua_caller;
+    g_pserver->lua_caller = c;
+
+    /* Select the correct DB in the Lua client */
+    if (c && serverTL->lua_client) {
+        selectDb(serverTL->lua_client, c->db->id);
+    }
+
     /* Push the function from the registry onto the stack */
     lua_rawgeti(lua, LUA_REGISTRYINDEX, f_ctx->lua_function_ref);
-    
+
     if (!lua_isfunction(lua, -1)) {
         lua_pop(lua, 1);
+        if (c) addReplyError(c, "ERR Function reference invalid");
         serverLog(LL_WARNING, "Function reference invalid in luaEngineCall");
         return;
     }
-    
+
     /* Push keys as Lua array */
     lua_newtable(lua);
     for (size_t i = 0; i < nkeys; i++) {
         lua_pushlstring(lua, (char*)ptrFromObj(keys[i]), sdslen((sds)ptrFromObj(keys[i])));
         lua_rawseti(lua, -2, i + 1);
     }
-    
+
     /* Push args as Lua array */
     lua_newtable(lua);
     for (size_t i = 0; i < nargs; i++) {
         lua_pushlstring(lua, (char*)ptrFromObj(args[i]), sdslen((sds)ptrFromObj(args[i])));
         lua_rawseti(lua, -2, i + 1);
     }
-    
+
     /* Call the function: function(KEYS, ARGV) */
     if (lua_pcall(lua, 2, 1, 0)) {
-        const char *err = lua_tostring(lua, -1);
-        serverLog(LL_WARNING, "Error calling Lua function: %s", err ? err : "unknown");
+        const char *err_msg = lua_tostring(lua, -1);
+        if (c) addReplyErrorFormat(c, "%s", err_msg ? err_msg : "unknown error");
+        serverLog(LL_WARNING, "Error calling Lua function: %s", err_msg ? err_msg : "unknown");
         lua_pop(lua, 1);  /* Pop error */
         return;
     }
-    
-    /* Result is on stack - caller should handle it */
-    /* For now, just pop it */
-    lua_pop(lua, 1);
+
+    /* Convert Lua return value to Redis reply */
+    if (c) {
+        luaReplyToRedisReply(c, lua); /* pops the value from the stack */
+    } else {
+        lua_pop(lua, 1);
+    }
+
+    /* Restore previous Lua caller context */
+    g_pserver->lua_caller = prev_lua_caller;
 }
 
 /* Memory overhead functions */
@@ -504,7 +642,7 @@ static void functionLoadCommand(client *c) {
     }
     
     if (c->argc != argc_pos + 1) {
-        addReplyError(c, "ERR wrong number of arguments for 'function load' command");
+        addReplyError(c, "wrong number of arguments for 'function load' command");
         return;
     }
     
@@ -512,14 +650,14 @@ static void functionLoadCommand(client *c) {
     
     /* Parse shebang line: #!<engine> name=<libname> */
     if (sdslen(code) < 5 || code[0] != '#' || code[1] != '!') {
-        addReplyError(c, "ERR library code must start with shebang statement");
+        addReplyError(c, "library code must start with shebang statement");
         return;
     }
     
     /* Find end of first line */
     char *eol = strchr(code + 2, '\n');
     if (!eol) {
-        addReplyError(c, "ERR missing library metadata");
+        addReplyError(c, "missing library metadata");
         return;
     }
     
@@ -545,7 +683,7 @@ static void functionLoadCommand(client *c) {
     if (!library_name) {
         sdsfree(engine_name);
         sdsfree(shebang);
-        addReplyError(c, "ERR library name must be specified in shebang");
+        addReplyError(c, "library name must be specified in shebang");
         return;
     }
     
@@ -558,13 +696,17 @@ static void functionLoadCommand(client *c) {
     engineInfo *ei = (engineInfo *)dictFetchValue(engines, engine_name);
     if (!ei) {
         addReplyErrorFormat(c, "ERR unknown engine '%s'", engine_name);
+        sdsfree(engine_name);
+        sdsfree(library_name);
         return;
     }
-    
+
     /* Check if library already exists */
     functionLibInfo *existing_li = (functionLibInfo *)dictFetchValue(curr_functions_lib_ctx->libraries, library_name);
     if (existing_li && !replace) {
         addReplyErrorFormat(c, "ERR Library '%s' already exists", library_name);
+        sdsfree(engine_name);
+        sdsfree(library_name);
         return;
     }
     
@@ -577,12 +719,14 @@ static void functionLoadCommand(client *c) {
     
     /* Call engine to create/compile the library */
     if (ei->eng->create(ei->eng->engine_ctx, li, code, LOAD_TIMEOUT_MS, &err) != C_OK) {
-        addReplyErrorFormat(c, "ERR %s", err ? err : "Failed to create library");
+        addReplyErrorFormat(c, "%s", err ? err : "Failed to create library");
         if (err) sdsfree(err);
         dictRelease(li->functions);
         sdsfree(li->name);
         sdsfree(li->code);
         zfree(li);
+        sdsfree(engine_name);
+        sdsfree(library_name);
         return;
     }
     
@@ -597,9 +741,13 @@ static void functionLoadCommand(client *c) {
     /* Update engine stats */
     functionsLibEngineStats *stats = (functionsLibEngineStats *)dictFetchValue(curr_functions_lib_ctx->engines_stats, ei->name);
     stats->n_lib++;
-    
+    stats->n_functions += dictSize(li->functions);
+
     addReplyBulkSds(c, sdsdup(library_name));
-    
+
+    sdsfree(engine_name);
+    sdsfree(library_name);
+
     /* Replicate the command */
     g_pserver->dirty++;
 }
@@ -747,15 +895,15 @@ static void functionFlushCommand(client *c) {
         } else if (!strcasecmp(mode, "async")) {
             async = 1;
         } else {
-            addReplyError(c, "ERR FUNCTION FLUSH only supports SYNC|ASYNC option");
+            addReplyError(c, "FUNCTION FLUSH only supports SYNC|ASYNC option");
             return;
         }
     }
     
     std::lock_guard<std::mutex> lock(functions_mutex);
-    
+
     if (curr_functions_lib_ctx) {
-        functionsLibCtxClearCurrent(async);
+        functionsLibCtxClear(curr_functions_lib_ctx);
     }
     
     addReply(c, shared.ok);
@@ -781,7 +929,7 @@ void functionCommand(client *c) {
         functionFlushCommand(c);
     } else if (!strcasecmp(subcommand, "DELETE")) {
         if (c->argc != 3) {
-            addReplyError(c, "ERR wrong number of arguments for 'function delete' command");
+            addReplyError(c, "wrong number of arguments for 'function delete' command");
             return;
         }
         sds library_name = (sds)ptrFromObj(c->argv[2]);
@@ -841,7 +989,7 @@ void functionCommand(client *c) {
         addReplyBulkSds(c, payload);
     } else if (!strcasecmp(subcommand, "RESTORE")) {
         if (c->argc < 3) {
-            addReplyError(c, "ERR wrong number of arguments for 'function restore' command");
+            addReplyError(c, "wrong number of arguments for 'function restore' command");
             return;
         }
         
@@ -863,19 +1011,18 @@ void functionCommand(client *c) {
         sds *lines = sdssplitlen(payload, sdslen(payload), "\n", 1, &count);
         int i = 0;
         int restored = 0;
-        
+
+        std::lock_guard<std::mutex> lock(functions_mutex);
+
         while (i + 2 < count) {
             sds engine_name = lines[i++];
             sds lib_name = lines[i++];
             sds code = lines[i++];
-            
+
             /* Skip separator */
             if (i < count && strcmp(lines[i], "---") == 0) {
                 i++;
             }
-            
-            /* Load this library */
-            std::lock_guard<std::mutex> lock(functions_mutex);
             
             engineInfo *ei = (engineInfo *)dictFetchValue(engines, engine_name);
             if (!ei) continue;
@@ -910,7 +1057,7 @@ void functionCommand(client *c) {
         g_pserver->dirty++;
     } else if (!strcasecmp(subcommand, "KILL")) {
         /* FUNCTION KILL - would kill running function, but we don't track that yet */
-        addReplyError(c, "ERR No scripts in execution right now");
+        addReplyError(c, "No scripts in execution right now");
     } else {
         addReplyErrorFormat(c, "ERR unknown FUNCTION subcommand '%s'", subcommand);
     }
@@ -977,12 +1124,9 @@ static void fcallCommandGeneric(client *c, int ro) {
     robj **args = (c->argc - 3 - numkeys > 0) ? c->argv + 3 + numkeys : NULL;
     size_t nargs = c->argc - 3 - numkeys;
     
-    /* Call the function */
+    /* Call the function - pass client as r_ctx so luaEngineCall can send the reply */
     engine *eng = fi->li->ei->eng;
-    eng->call(NULL, eng->engine_ctx, fi->function, keys, (size_t)numkeys, args, nargs);
-    
-    /* For now, just reply OK - TODO: Capture Lua return value in Phase 2 enhancement */
-    addReply(c, shared.ok);
+    eng->call(c, eng->engine_ctx, fi->function, keys, (size_t)numkeys, args, nargs);
     
     /* Replicate write functions */
     if (!ro) {

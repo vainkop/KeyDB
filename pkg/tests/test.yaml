@@ -364,7 +364,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: test
-        image: vainkop/keydb8:latest
+        image: vainkop/keydb8:8.2.3
         command: ["/bin/bash", "/tests/test.sh"]
         env:
         - name: KEYDB_HOST

@@ -29,6 +29,7 @@
  */
 
 #include "server.h"
+#include "functions.h"
 #include "monotonic.h"
 #include "cluster.h"
 #include "slowlog.h"
@@ -1041,7 +1042,7 @@ struct redisCommand redisCommandTable[] = {
      0,evalGetKeys,0,0,0,0,0,0},
 
     {"function",functionCommand,-2,
-     "no-script no-monitor @scripting",
+     "write no-script no-monitor @scripting",
      0,NULL,0,0,0,0,0,0},
 
     {"fcall",fcallCommand,-3,
@@ -4171,6 +4172,7 @@ void initServer(void) {
     if (g_pserver->cluster_enabled) clusterInit();
     replicationScriptCacheInit();
     scriptingInit(1);
+    functionsInit();
     slowlogInit();
     latencyMonitorInit();
 
