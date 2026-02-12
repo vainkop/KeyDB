@@ -1,4 +1,4 @@
-![Current Release](https://img.shields.io/github/release/JohnSully/KeyDB.svg)
+![Current Release](https://img.shields.io/github/release/vainkop/KeyDB.svg)
 ![CI](https://github.com/JohnSully/KeyDB/workflows/CI/badge.svg?branch=unstable)
 [![StackShare](http://img.shields.io/badge/tech-stack-0690fa.svg?style=flat)](https://stackshare.io/eq-alpha-technology-inc/eq-alpha-technology-inc)
 
