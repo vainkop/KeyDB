@@ -34,19 +34,22 @@ WORKDIR /keydb
 # Copy source code
 COPY . .
 
+# Helper script for retrying commands that may fail under QEMU emulation
+# GCC can segfault randomly under QEMU arm64; retrying usually succeeds
+RUN printf '#!/bin/sh\nmax=8; attempt=1\nwhile [ $attempt -le $max ]; do\n  "$@" && exit 0\n  echo "Attempt $attempt/$max failed, cleaning corrupt objects and retrying..."\n  find . -name "*.o" -newer /usr/local/bin/retry -size -100c -delete 2>/dev/null || true\n  attempt=$((attempt+1)); sleep 1\ndone\necho "All $max attempts failed"; exit 1\n' > /usr/local/bin/retry && \
+    chmod +x /usr/local/bin/retry
+
 # Clean any previous builds and build dependencies
-# ARM64 builds use -O0 (no optimization) to avoid GCC crashes in emulation
-# AMD64 also uses -O2 instead of -O3 for jemalloc to avoid potential issues
-# We need to clean dependencies and override CFLAGS before configure/build runs
+# ARM64 builds use -O0 (no optimization) and retry to handle QEMU GCC segfaults
 RUN make clean || true && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         cd deps && \
-        CFLAGS="" make hiredis && \
+        CFLAGS="" retry make hiredis && \
         (cd jemalloc && [ -f Makefile ] && make distclean || true) && \
-        CFLAGS="" make jemalloc JEMALLOC_CFLAGS="-std=gnu99 -Wall -pipe -g -O0" && \
+        CFLAGS="" retry make jemalloc JEMALLOC_CFLAGS="-std=gnu99 -Wall -pipe -g -O0" && \
         (cd lua && make clean || true) && \
-        CFLAGS="" cd lua/src && make all CFLAGS="-O0 -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DREDIS_STATIC='' -DLUA_USE_MKSTEMP" MYLDFLAGS="" AR="ar rc" && cd ../.. && \
-        CFLAGS="" make hdr_histogram && \
+        cd lua/src && CFLAGS="" retry make all CFLAGS="-O0 -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DREDIS_STATIC='' -DLUA_USE_MKSTEMP" MYLDFLAGS="" AR="ar rc" && cd ../.. && \
+        CFLAGS="" retry make hdr_histogram && \
         cd ..; \
     else \
         cd deps && \
@@ -58,9 +61,9 @@ RUN make clean || true && \
     fi
 
 # Build KeyDB with TLS support
-# ARM64: use -O0 (no optimization) and single-threaded build to avoid GCC crashes
+# ARM64: use -O0 (no optimization), single-threaded, with retry for QEMU stability
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-        make BUILD_TLS=yes OPTIMIZATION=-O0 -j1; \
+        retry make BUILD_TLS=yes OPTIMIZATION=-O0 -j1; \
     else \
         make BUILD_TLS=yes -j$(nproc); \
     fi
