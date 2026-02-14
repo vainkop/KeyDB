@@ -628,12 +628,17 @@ void latencyCommand(client *c) {
                 resets += latencyResetEvent(szFromObj(c->argv[j]));
             addReplyLongLong(c,resets);
         }
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"histogram") && c->argc >= 2) {
+        /* LATENCY HISTOGRAM [command ...] - stub: return empty map */
+        addReplyMapLen(c,0);
     } else if (!strcasecmp(szFromObj(c->argv[1]),"help") && c->argc == 2) {
         const char *help[] = {
 "DOCTOR",
 "    Return a human readable latency analysis report.",
 "GRAPH <event>",
 "    Return an ASCII latency graph for the <event> class.",
+"HISTOGRAM [<command> ...]",
+"    Return latency histogram of commands (stub: returns empty).",
 "HISTORY <event>",
 "    Return time-latency samples for the <event> class.",
 "LATEST",
