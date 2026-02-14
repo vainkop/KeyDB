@@ -8,7 +8,6 @@ metadata:
 spec:
   replicas: {{ .Values.nodes }}
   serviceName: {{ include "keydb.fullname" . }}-headless
-  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "keydb.selectorLabels" . | nindent 6 }}
@@ -113,6 +112,8 @@ spec:
             {{- end }}
             $REPLICATION_ARGS
         env:
+        - name: REDIS_PORT
+          value: {{ .Values.port | quote }}
         {{- if include "keydb.authEnabled" . }}
         - name: KEYDB_PASSWORD
           valueFrom:
@@ -178,7 +179,7 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         volumeMounts:
-        - name: data
+        - name: keydb-data
           mountPath: /data
         - name: health
           mountPath: /health
@@ -237,7 +238,7 @@ spec:
           name: {{ include "keydb.fullname" . }}-health
           defaultMode: 0755
       {{- if not .Values.persistence.enabled }}
-      - name: data
+      - name: keydb-data
         emptyDir: {}
       {{- end }}
       {{- with .Values.extraVolumes }}
@@ -246,9 +247,7 @@ spec:
   {{- if .Values.persistence.enabled }}
   volumeClaimTemplates:
   - metadata:
-      name: data
-      labels:
-        {{- include "keydb.selectorLabels" . | nindent 8 }}
+      name: keydb-data
     spec:
       accessModes:
         - {{ .Values.persistence.accessMode | quote }}
