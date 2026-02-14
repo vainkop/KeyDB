@@ -2,7 +2,6 @@ name: Docker Build & Push
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
 
 jobs:
@@ -22,12 +21,7 @@ jobs:
 
       - name: Determine tag
         id: tag
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=latest" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
@@ -52,12 +46,7 @@ jobs:
 
       - name: Determine tag
         id: tag
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=latest" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
