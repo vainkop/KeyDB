@@ -1,0 +1,41 @@
+# Exclude build artifacts to prevent host-arch objects from breaking cross-compilation
+*.o
+*.d
+*.so
+*.dSYM
+src/keydb-server
+src/keydb-cli
+src/keydb-sentinel
+src/keydb-benchmark
+src/keydb-check-rdb
+src/keydb-check-aof
+src/Makefile.dep
+
+# Exclude pre-compiled dependency libraries (must be rebuilt for target arch)
+deps/hiredis/*.a
+deps/hiredis/*.o
+deps/jemalloc/lib/
+deps/jemalloc/src/*.o
+deps/jemalloc/src/*.sym.o
+deps/jemalloc/src/*.sym
+deps/jemalloc/include/jemalloc/jemalloc.h
+deps/jemalloc/include/jemalloc/jemalloc_defs.h
+deps/lua/src/liblua.a
+deps/lua/src/*.o
+deps/lua/src/lua
+deps/lua/src/luac
+deps/hdr_histogram/hdr_histogram.o
+
+# Exclude IDE/editor files
+.vscode/
+.idea/
+.ccls
+.ccls-cache/
+compile_commands.json
+*.code-workspace
+
+# Exclude git and CI
+.git
+.github
+.make-*
+.prerequisites

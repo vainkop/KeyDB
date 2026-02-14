@@ -149,6 +149,8 @@ client *createClient(connection *conn, int iel) {
     c->resp = 2;
     c->conn = conn;
     c->name = NULL;
+    c->lib_name = NULL;
+    c->lib_ver = NULL;
     c->bufpos = 0;
     c->qb_pos = 0;
     c->querybuf = sdsempty();
@@ -1738,6 +1740,8 @@ bool freeClient(client *c) {
      * and finally release the client structure itself. */
     zfree(c->replyAsync);
     if (c->name) decrRefCount(c->name);
+    sdsfree(c->lib_name);
+    sdsfree(c->lib_ver);
     zfree(c->argv);
     c->argv_len_sumActive = 0;
     freeClientMultiState(c);
@@ -2921,12 +2925,14 @@ sds catClientInfoString(sds s, client *client) {
         total_mem += zmalloc_size(client->argv);
 
     return sdscatfmt(s,
-        "id=%U addr=%s laddr=%s %s name=%s age=%I idle=%I flags=%s db=%i sub=%i psub=%i multi=%i qbuf=%U qbuf-free=%U argv-mem=%U obl=%U oll=%U omem=%U tot-mem=%U events=%s cmd=%s user=%s redir=%I",
+        "id=%U addr=%s laddr=%s %s name=%s lib-name=%s lib-ver=%s age=%I idle=%I flags=%s db=%i sub=%i psub=%i multi=%i qbuf=%U qbuf-free=%U argv-mem=%U obl=%U oll=%U omem=%U tot-mem=%U events=%s cmd=%s user=%s redir=%I",
         (unsigned long long) client->id,
         getClientPeerId(client),
         getClientSockname(client),
         connGetInfo(client->conn, conninfo, sizeof(conninfo)),
         client->name ? (char*)szFromObj(client->name) : "",
+        client->lib_name ? client->lib_name : "",
+        client->lib_ver ? client->lib_ver : "",
         (long long)(g_pserver->unixtime - client->ctime),
         (long long)(g_pserver->unixtime - client->lastinteraction),
         flags,
@@ -3039,6 +3045,10 @@ void resetCommand(client *c) {
         decrRefCount(c->name);
         c->name = NULL;
     }
+    sdsfree(c->lib_name);
+    c->lib_name = NULL;
+    sdsfree(c->lib_ver);
+    c->lib_ver = NULL;
 
     /* Selectively clear state flags not covered above */
     c->flags &= ~(CLIENT_ASKING|CLIENT_READONLY|CLIENT_PUBSUB|
@@ -3087,6 +3097,12 @@ void clientCommand(client *c) {
 "    Suspend all, or just write, clients for <timout> milliseconds.",
 "REPLY (ON|OFF|SKIP)",
 "    Control the replies sent to the current connection.",
+"SETINFO <option> <value>",
+"    Set client specific info. Options:",
+"    * LIB-NAME <name>",
+"      Set the name of the client library.",
+"    * LIB-VER <version>",
+"      Set the version of the client library.",
 "SETNAME <name>",
 "    Assign the name <name> to the current connection.",
 "UNBLOCK <clientid> [TIMEOUT|ERROR]",
@@ -3318,6 +3334,22 @@ NULL
         /* CLIENT SETNAME */
         if (clientSetNameOrReply(c,c->argv[2]) == C_OK)
             addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"setinfo") && c->argc == 4) {
+        /* CLIENT SETINFO LIB-NAME <name> | LIB-VER <ver> */
+        sds val = sdsdup(szFromObj(c->argv[3]));
+        if (!strcasecmp(szFromObj(c->argv[2]),"lib-name")) {
+            sdsfree(c->lib_name);
+            c->lib_name = sdslen(val) ? val : (sdsfree(val), (sds)NULL);
+            addReply(c,shared.ok);
+        } else if (!strcasecmp(szFromObj(c->argv[2]),"lib-ver")) {
+            sdsfree(c->lib_ver);
+            c->lib_ver = sdslen(val) ? val : (sdsfree(val), (sds)NULL);
+            addReply(c,shared.ok);
+        } else {
+            sdsfree(val);
+            addReplyErrorFormat(c,"Unrecognized option '%s' for CLIENT SETINFO",
+                (char*)szFromObj(c->argv[2]));
+        }
     } else if (!strcasecmp(szFromObj(c->argv[1]),"getname") && c->argc == 2) {
         /* CLIENT GETNAME */
         if (c->name)

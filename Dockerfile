@@ -40,12 +40,18 @@ RUN printf '#!/bin/sh\nmax=8; attempt=1\nwhile [ $attempt -le $max ]; do\n  "$@"
     chmod +x /usr/local/bin/retry
 
 # Clean any previous builds and build dependencies
+# Force-clean all deps first to prevent host-arch objects from breaking cross-compilation
 # ARM64 builds use -O0 (no optimization) and retry to handle QEMU GCC segfaults
 RUN make clean || true && \
+    cd deps && \
+    (cd hiredis && make clean || true) && \
+    (cd jemalloc && [ -f Makefile ] && make distclean || true) && \
+    (cd lua && make clean || true) && \
+    (cd hdr_histogram && make clean || true) && \
+    cd .. && \
     if [ "$(uname -m)" = "aarch64" ]; then \
         cd deps && \
-        CFLAGS="" retry make hiredis && \
-        (cd jemalloc && [ -f Makefile ] && make distclean || true) && \
+        CFLAGS="" retry make hiredis BUILD_TLS=yes && \
         CFLAGS="" retry make jemalloc JEMALLOC_CFLAGS="-std=gnu99 -Wall -pipe -g -O0" && \
         (cd lua && make clean || true) && \
         cd lua/src && CFLAGS="" retry make all CFLAGS="-O0 -Wall -DLUA_ANSI -DENABLE_CJSON_GLOBAL -DREDIS_STATIC='' -DLUA_USE_MKSTEMP" MYLDFLAGS="" AR="ar rc" && cd ../.. && \
@@ -53,8 +59,7 @@ RUN make clean || true && \
         cd ..; \
     else \
         cd deps && \
-        make hiredis && \
-        (cd jemalloc && [ -f Makefile ] && make distclean || true) && \
+        make hiredis BUILD_TLS=yes && \
         make jemalloc JEMALLOC_CFLAGS="-std=gnu99 -Wall -pipe -g -O2" && \
         make lua hdr_histogram -j$(nproc) && \
         cd ..; \
@@ -63,7 +68,7 @@ RUN make clean || true && \
 # Build KeyDB with TLS support
 # ARM64: use -O0 (no optimization), single-threaded, with retry for QEMU stability
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-        retry make BUILD_TLS=yes OPTIMIZATION=-O0 -j1; \
+        retry make BUILD_TLS=yes "OPTIMIZATION=-O0 -fno-lto" -j1; \
     else \
         make BUILD_TLS=yes -j$(nproc); \
     fi
